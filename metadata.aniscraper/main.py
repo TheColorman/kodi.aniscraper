@@ -106,7 +106,9 @@ class Main:
     def scan_anime(self, folder_path):
         """Scan a folder for anime. Returns a dictionary with keyr = anime titles and values = list of absolute paths to episode files"""
         anime = {}
-        # def 
+        def resolve_anime(filename):
+            pass
+
         def scan(folder):
             for item in os.listdir(folder):
                 item_path = os.path.join(folder, item)
@@ -114,7 +116,10 @@ class Main:
                     scan(item_path)
                 elif os.path.isfile(item_path):
                     if item.endswith('.mkv') or item.endswith('.mp4'):
-                        anime[folder] = anime.get(folder, []) + [item_path]
+                        anime_title = resolve_anime(item)
+                        if anime[anime_title] is None:
+                            anime[anime_title] = []
+                        anime[anime_title].append(item_path)
 
 
 main = Main()
