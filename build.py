@@ -2,20 +2,30 @@ import shutil
 import xml.etree.ElementTree as ET
 import os, re
 
-def main():
-    addon = ET.parse('metadata.aniscraper/addon.xml').getroot()
+def clear(name):
+    for file in os.listdir('.'):
+        if re.match(rf'{name}-\d+\.\d+\.\d+\.zip', file):
+            os.remove(file)
+    for file in os.listdir('W:/Archive/Network Share'):
+        if re.match(rf'{name}-\d+\.\d+\.\d+\.zip', file):
+            os.remove('W:/Archive/Network Share/' + file)
+
+def build(name):
+    addon = ET.parse(f'{name}/addon.xml').getroot()
     version = addon.attrib['version']
 
     # Delete old zips
-    for file in os.listdir('.'):
-        if re.match(r'metadata\.aniscraper-\d+\.\d+\.\d+\.zip', file):
-            os.remove(file)
-    for file in os.listdir('W:/Archive/Network Share'):
-        if re.match(r'metadata\.aniscraper-\d+\.\d+\.\d+\.zip', file):
-            os.remove('W:/Archive/Network Share/' + file)
+    clear(name)
 
-    shutil.make_archive(f'metadata.aniscraper-{version}', 'zip', '.', 'metadata.aniscraper')
-    shutil.copy(f'metadata.aniscraper-{version}.zip', 'W:/Archive/Network Share/')
+    if not os.path.exists('dest'):
+        os.makedirs('dest')
+    
+    shutil.make_archive(f'dest/{name}-{version}', 'zip', '.', name)
+    shutil.copy(f'dest/{name}-{version}.zip', 'W:/Archive/Network Share/')
+
+def main():
+    build("metadata.aniscraper")
+    build("script.module.anitopy")
 
 if __name__ == '__main__':
     main()
