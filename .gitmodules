@@ -1,0 +1,3 @@
+[submodule "metadata.aniscraper/resources/deps/anitomy"]
+	path = metadata.aniscraper/resources/deps/anitomy
+	url = https://github.com/erengy/anitomy
