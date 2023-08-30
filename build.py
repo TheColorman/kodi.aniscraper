@@ -25,7 +25,6 @@ def build(name):
 
 def main():
     build("metadata.aniscraper")
-    build("script.module.anitopy")
 
 if __name__ == '__main__':
     main()

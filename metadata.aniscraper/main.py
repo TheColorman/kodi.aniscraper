@@ -26,7 +26,7 @@ import xbmcgui
 import xbmcplugin, xbmcaddon
 import xbmc, xbmcvfs
 
-import anitopy
+from .resources.lib import anitopy
 import web_pdb
 
 try:
