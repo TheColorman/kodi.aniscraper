@@ -62,6 +62,11 @@ class Main:
         except Exception as e:
             log("Exception thrown initializing the picklejar: " + str(e))
     
+    def resetjar(self):
+        """Reset the database"""
+        self._db = {}
+        self.updatejar()
+
     def initjar(self):
         """Load the database from the picklejar"""
         try:
@@ -80,6 +85,15 @@ class Main:
         except Exception as e:
             log("Exception thrown initializing the picklejar: " + str(e))
             return False
+    
+    def validate_db(self):
+        """Creates any db missing properties"""
+        self._db.setdefault('anime', {
+            'titles': {},
+            'ids': {}
+        })
+        self._db.setdefault('sourcepath', None)
+        self.updatejar()
 
     def updatejar(self):
         """Save the database to the picklejar"""
@@ -108,7 +122,7 @@ class Main:
             for source in root.find('video').findall('source'):
                 name = source.find('name').text
                 path = source.find('path').text
-                for folder in os.listdir(path):
+                for folder in xbmcvfs.listdir(path)[0]:
                     if folder == folder_name:
                         self._db['sourcepath'] = path
                         self.updatejar()
@@ -124,19 +138,20 @@ class Main:
             return parsed['anime_title']
 
         anidict = {}
+        def add_files(folder: str, files: list):
+            for file in files:
+                if file.endswith('.mkv') or file.endswith('.mp4'):
+                    anime_title = parse_anime(file)
+                    anidict.setdefault(anime_title, [])
+                    anidict[anime_title].append(os.path.join(folder, file))
+
         def scan(folder: str) -> dict:
-            for item in os.listdir(folder):
-                log("Scanning " + item)
-                item_path = os.path.join(folder, item)
-                if os.path.isdir(item_path):
-                    log("Recursing into " + item)
-                    scan(item_path)
-                elif os.path.isfile(item_path):
-                    log("Found file " + item)
-                    if item.endswith('.mkv') or item.endswith('.mp4'):
-                        anime_title = parse_anime(item)
-                        anidict.setdefault(anime_title, [])
-                        anidict[anime_title].append(item_path)
+            dirs, files = xbmcvfs.listdir(folder)
+
+            add_files(folder, files)
+            for dir in dirs:
+                log("Recursing into " + dir)
+                scan(os.path.join(folder, dir))
             
         scan(folder_path)
         return anidict
@@ -144,6 +159,18 @@ class Main:
     def sort_most_common_key(self, d: dict) -> str:
         """Return the dict sorted by key with the longest list"""
         return sorted(d.items(), key=lambda x: len(x[1]), reverse=True)
+
+    def _AL_qeury(self, query: str, variables: dict):
+        """Query the AniList API"""
+        url = 'https://graphql.anilist.co'
+
+        response = requests.post(url, json={'query': query, 'variables': variables})
+
+        json = response.json()
+        if json.get('errors'):
+            raise Exception(json['errors'][0]['message'])
+        else:
+            return json['data']
 
     def AL_get_anime_by_title(self, title: str):
         """Uses the AniList API to search for anime by title"""
@@ -157,46 +184,126 @@ class Main:
                     english
                     romaji
                 }
-                format
                 description
-                season
                 coverImage {
                     extraLarge
                     medium
                 }
-                bannerImage
                 averageScore
+                meanScore
                 popularity
-                siteUrl
+                episodes
+                trailer {
+                    site
+                    id
+                }
+                genres
+                studios {
+                    nodes {
+                        name
+                    }
+                }
+                startDate {
+                    year
+                    month
+                    day
+                }
+                status
+                bannerImage
+                duration
             }
         }
         '''
         variables = {
             'search': title
         }
-        url = 'https://graphql.anilist.co'
 
-        response = requests.post(url, json={'query': query, 'variables': variables})
+        response = self._AL_qeury(query, variables)
+        anime = response['Media']
+        log(f"Anime with id {anime['id']} found!")
+        return anime
 
-        json = response.json()
-        if json.get('errors'):
-            raise Exception(json['errors'][0]['message'])
-        else:
-            anime = json['data']['Media']
-            log(f"Anime with id {anime['id']} found!")
-            return anime
+    def AL_get_anime_by_id(self, id: int):
+        """Uses the AniList API to search for anime by id"""
+        log("Using AniList API to search for anime with id: " + str(id))
+        query = '''
+        query ($id: Int) {
+            Media (id: $id, type: ANIME) {
+                id
+                idMal
+                title {
+                    english
+                    romaji
+                }
+                description
+                coverImage {
+                    extraLarge
+                    medium
+                }
+                averageScore
+                meanScore
+                popularity
+                episodes
+                trailer {
+                    site
+                    id
+                }
+                genres
+                studios {
+                    nodes {
+                        name
+                    }
+                }
+                startDate {
+                    year
+                    month
+                    day
+                }
+                status
+                bannerImage
+                duration
+            }
+        }
+        '''
+        variables = {
+            'id': id
+        }
+
+        response = self._AL_qeury(query, variables)
+        anime = response['Media']
+        log(f"Anime with id {anime['id']} found!")
+        return anime
     
     def fetch_anime_by_title(self, title: str, no_cache=False):
         """Fetch anime by title from the database, or from the AniList API if not found"""
-        self._db.setdefault('anime', {})
-        if self._db['anime'].get(title) and not no_cache:
+        self.validate_db()
+        if self._db['anime']['titles'].get(title) and not no_cache:
             log("Found anime in database")
-            return self._db['anime'][title]
+            return self._db['anime']['titles'][title]
         else:
             log(f"Fetching {title} from AniList API")
             try:
                 anime = self.AL_get_anime_by_title(title)
-                self._db['anime'][title] = anime
+                self._db['anime']['ids'][anime['id']] = anime
+                self._db['anime'][title] = self._db['anime']['ids'][anime['id']] # Faster when we have 2 search keys
+                self.updatejar()
+                return anime
+            except Exception as e:
+                log("Failed to fetch anime from AniList API: " + str(e))
+                return None
+    
+    def fetch_anime_by_id(self, id: int):
+        """Fetch anime by title from the database, or from the AniList API if not found"""
+        self.validate_db()
+        if self._db['anime']['ids'].get(id):
+            log("Found anime in database")
+            return self._db['anime']['ids'][id]
+        else:
+            log(f"Fetching {id} from AniList API")
+            try:
+                anime = self.AL_get_anime_by_id(id)
+                self._db['anime']['ids'][anime['id']] = anime
+                self._db['anime'][anime['title']['english']] = self._db['anime']['ids'][anime['id']]
                 self.updatejar()
                 return anime
             except Exception as e:
@@ -212,6 +319,7 @@ if action == 'find':
     anime_candidates = main.scan_anime(anime_folder)
 
     anime_candidates = main.sort_most_common_key(anime_candidates)
+    anime = None
     for title, episodes in anime_candidates:
         anime = main.fetch_anime_by_title(title, no_cache=True) #! Remove no_cache=True in production
         log(f"Got {str(anime)}")
@@ -219,173 +327,123 @@ if action == 'find':
             break
     
     if anime is None:
-        raise Exception("No anime found for title " + title)
-    # year = params.get('year', 'not specified')
+        log("No anime found for title " + title)
 
-    liz = xbmcgui.ListItem(anime['title']['english'], anime['title']['romaji'], offscreen=True)
-    liz.setArt({
-        'thumb': anime['coverImage']['medium'],
-        'poster': anime['coverImage']['extraLarge'],
-        'banner': anime['bannerImage'],
-        'landscape': anime['bannerImage']
-    })
-    liz.setUniqueIDs({
-        'anilist': anime['id'],
-        'myanimelist': anime['idMal']
-    }, "anilist")
-    liz.setRating("anilist average", anime['averageScore'], defaultt=True)
-    xbmcplugin.addDirectoryItem(
-        handle=plugin_handle,
-        url=str(anime['id']),
-        listitem=liz,
-        isFolder=True
-    )
+    else:
+        # year = params.get('year', 'not specified')
+
+        liz = xbmcgui.ListItem(anime['title']['english'], anime['title']['romaji'], offscreen=True)
+        liz.setArt({
+            'thumb': anime['coverImage']['medium'],
+            'poster': anime['coverImage']['extraLarge'],
+            'banner': anime['bannerImage'],
+            'landscape': anime['bannerImage']
+        })
+        
+        xbmcplugin.addDirectoryItem(
+            handle=plugin_handle,
+            url=str(anime['id']),
+            listitem=liz,
+            isFolder=True
+        )
 
 elif action == 'getdetails':
-    url = params['url']
-    if url == '/path/to/show':
-        xbmc.log('Get tv show details callback', xbmc.LOGDEBUG)
-        liz = xbmcgui.ListItem('Demo show 1', offscreen=True)
-        tags = liz.getVideoInfoTag()
-        tags.setTitle('Demo show 1')
-        tags.setOriginalTitle('Demo shåvv 1')
-        tags.setSortTitle('2')
-        tags.setUserRating(5)
-        tags.setPlotOutline('Outline yo')
-        tags.setPlot('Plot yo')
-        tags.setTagLine('Tag yo')
-        tags.setDuration(110)
-        tags.setMpaa('T')
-        tags.setTrailer('/home/akva/fluffy/bunnies.mkv')
-        tags.setGenres(['Action', 'Comedy'])
-        tags.setWriters(['None', 'Want', 'To Admit It'])
-        tags.setDirectors(['Director 1', 'Director 2'])
-        tags.setStudios(['Studio1', 'Studio2'])
-        tags.setDateAdded('2016-01-01')
-        tags.setPremiered('2015-01-01')
-        tags.setFirstAired('2007-01-01')
-        tags.setTvShowStatus('Cancelled')
-        tags.setEpisodeGuide('/path/to/show/guide')
-        tags.setTagLine('Family / Mom <3')
-        tags.setRatings({'imdb': (9, 100000), 'tvdb': (8.9, 1000)}, defaultrating='imdb')
-        tags.setUniqueIDs({'imdb': 'tt8938399', 'tmdb': '9837493'}, defaultuniqueid='tvdb')
-        tags.addSeason(1, 'Beautiful')
-        tags.addSeason(2, 'Sun')
-        tags.setCast([xbmc.Actor('spiff', 'himself', order=2, thumbnail='/home/akva/Pictures/fish.jpg'),
-                      xbmc.Actor('monkey', 'orange', order=1, thumbnail='/home/akva/Pictures/coffee.jpg')])
-        tags.addAvailableArtwork('DefaultBackFanart.png', 'banner')
-        tags.addAvailableArtwork('/home/akva/Pictures/hawaii-shirt.png', 'poster')
-        liz.setAvailableFanart([{'image': 'DefaultBackFanart.png', 'preview': 'DefaultBackFanart.png'},
-                                {'image': '/home/akva/Pictures/hawaii-shirt.png',
-                                 'preview': '/home/akva/Pictures/hawaii-shirt.png'}])
-        xbmcplugin.setResolvedUrl(handle=plugin_handle, succeeded=True, listitem=liz)
+    anilist_id = params['url']
+    log(f'Get details for anime with id {anilist_id}')
+    anime = main.fetch_anime_by_id(anilist_id)
+    if not anime:
+        raise Exception("No anime found for id " + anilist_id)
+    
+    liz = xbmcgui.ListItem(anime['title']['english'], anime['title']['romaji'], offscreen=True)
+    tags = liz.getVideoInfoTag()
+    tags.setTitle(anime['title']['english'])
+    tags.setOriginalTitle(anime['title']['romaji'])
+    tags.setSortTitle(anime['title']['english'])
+    tags.setUserRating(anime['averageScore'])
+    tags.setPlot(anime['description'])
+    tags.setDuration(anime['episodes'])
+    if anime['trailer']:
+        tags.setTrailer(f'plugin://plugin.video.youtube/?action=play_video&videoid={anime["trailer"]["id"]}')
+    tags.setGenres(anime['genres'])
+    # tags.setWriters(['None', 'Want', 'To Admit It']) # TODO: Get staff
+    # tags.setDirectors(['Director 1', 'Director 2'])
+    tags.setStudios([studio['name'] for studio in anime['studios']['nodes']])
+    tags.setFirstAired(f'{anime["startDate"]["year"]}-{anime["startDate"]["month"]}-{anime["startDate"]["day"]}')
+    tags.setTvShowStatus(anime['status'])
+    tags.setEpisodeGuide(str(anime['id']))
+    tags.setRatings(
+        {
+            'average': (anime['averageScore'], 0),
+            'mean': (anime['meanScore'], 0),
+            'popularity': (anime['popularity'], 0)
+        }, defaultrating='average'
+    )
+    tags.setUniqueIDs(
+        {
+            'anilist': str(anime['id']),
+            'mal': str(anime['idMal'])
+        }, defaultuniqueid='anilist')
+    tags.addSeason(1)
+    # tags.setCast([xbmc.Actor('spiff', 'himself', order=2, thumbnail='/home/akva/Pictures/fish.jpg'), # TODO
+    #                 xbmc.Actor('monkey', 'orange', order=1, thumbnail='/home/akva/Pictures/coffee.jpg')])
+    tags.addAvailableArtwork(anime['bannerImage'], 'banner')
+    tags.addAvailableArtwork(anime['coverImage']['extraLarge'], 'poster')
+    liz.setAvailableFanart([{'image': anime['bannerImage'], 'preview': anime['bannerImage']},
+                            {'image': anime['coverImage']['extraLarge'],
+                                'preview': anime['coverImage']['extraLarge']}])
+    xbmcplugin.setResolvedUrl(handle=plugin_handle, succeeded=True, listitem=liz)
 
 elif action == 'getepisodelist':
-    url = params['url']
-    xbmc.log(f'Get episode list callback "{url}"', xbmc.LOGDEBUG)
-    if url == '/path/to/show/guide':
-        liz = xbmcgui.ListItem('Demo Episode 1x1', offscreen=True)
-        tags = liz.getVideoInfoTag()
-        tags.setTitle('Demo Episode 1')
-        tags.setSeason(1)
-        tags.setEpisode(1)
-        tags.setFirstAired('2015-01-01')
-        tags.addAvailableArtwork('/path/to/episode1', 'banner')
-        xbmcplugin.addDirectoryItem(handle=plugin_handle, url="/path/to/episode1", listitem=liz, isFolder=False)
+    anilist_id = params['url']
+    log(f'Get episode list for anime with id {anilist_id}')
 
-        liz = xbmcgui.ListItem('Demo Episode 2x2', offscreen=True)
+    anime = main.fetch_anime_by_id(anilist_id)
+    if not anime:
+        raise Exception("No anime found for id " + anilist_id)
+    
+    log(f"Anime has {anime['episodes']} episodes")
+    for i in range(1, anime['episodes'] + 1):
+        liz = xbmcgui.ListItem(f'Episode {i}', offscreen=True)
         tags = liz.getVideoInfoTag()
-        tags.setTitle('Demo Episode 2')
-        tags.setSeason(2)
-        tags.setEpisode(2)
-        tags.setFirstAired('2014-01-01')
-        tags.addAvailableArtwork('/path/to/episode2', 'banner')
-        xbmcplugin.addDirectoryItem(handle=plugin_handle, url="/path/to/episode1", listitem=liz, isFolder=False)
+        tags.setTitle(f'Episode {i}')
+        tags.setSeason(1)
+        tags.setEpisode(i)
+        xbmcplugin.addDirectoryItem(handle=plugin_handle, url=f"{anime['id']}-1-{i}", listitem=liz, isFolder=False)
 
 elif action == 'getepisodedetails':
-    url = params['url']
-    if url == '/path/to/episode1':
-        xbmc.log('Get episode 1 details callback', xbmc.LOGDEBUG)
-        liz = xbmcgui.ListItem('Demo Episode 1', offscreen=True)
-        tags = liz.getVideoInfoTag()
-        tags.setTitle('Demo Episode 1')
-        tags.setOriginalTitle('Demo æpisod 1x1')
-        tags.setSeason(1)
-        tags.setEpisode(1)
-        tags.setUserRating(5)
-        tags.setPlotOutline('Outline yo')
-        tags.setPlot('Plot yo')
-        tags.setTagLine('Tag yo')
-        tags.setDuration(110)
-        tags.setMpaa('T')
-        tags.setTrailer('/home/akva/fluffy/unicorns.mkv')
-        tags.setGenres(['Action', 'Comedy'])
-        tags.setCountries(['Norway', 'Sweden', 'China'])
-        tags.setWriters(['None', 'Want', 'To Admit It'])
-        tags.setDirectors(['Director 1', 'Director 2'])
-        tags.setStudios(['Studio1', 'Studio2'])
-        tags.setDateAdded('2016-01-01')
-        tags.setPremiered('2015-01-01')
-        tags.setFirstAired('2007-01-01')
-        tags.setTagLine('Family / Dad <3')
-        tags.setRatings({'imdb': (9, 100000), 'tvdb': (8.9, 1000)}, defaultrating='imdb')
-        tags.setUniqueIDs({'tvdb': '3894', 'imdb': 'tt384940'}, defaultuniqueid='tvdb')
-        tags.addSeason(1, 'Beautiful')
-        tags.addSeason(2, 'Sun')
-        tags.setCast([xbmc.Actor('spiff', 'himself', order=2, thumbnail='/home/akva/Pictures/fish.jpg'),
-                      xbmc.Actor('monkey', 'orange', order=1, thumbnail='/home/akva/Pictures/coffee.jpg')])
-        tags.addAvailableArtwork('DefaultBackFanart.png', 'banner')
-        tags.addAvailableArtwork('/home/akva/Pictures/hawaii-shirt.png', 'poster')
-        liz.setAvailableFanart([{'image': 'DefaultBackFanart.png', 'preview': 'DefaultBackFanart.png'},
-                                {'image': '/home/akva/Pictures/hawaii-shirt.png',
-                                 'preview': '/home/akva/Pictures/hawaii-shirt.png'}])
-        xbmcplugin.setResolvedUrl(handle=plugin_handle, succeeded=True, listitem=liz)
+    anilist_id, season, episode = params['url'].split('-')
+    log(f'Get episode {episode} details for anime with id {anilist_id}')
+    anime = main.fetch_anime_by_id(anilist_id)
 
-    elif url == '/path/to/episode2':
-        xbmc.log('Get episode 2 details callback', xbmc.LOGDEBUG)
-        liz = xbmcgui.ListItem('Demo Episode 2', offscreen=True)
-        tags = liz.getVideoInfoTag()
-        tags.setTitle('Demo Episode 2')
-        tags.setOriginalTitle('Demo æpisod 2x2')
-        tags.setSortTitle('1')
-        tags.setSeason(2)
-        tags.setEpisode(2)
-        tags.setUserRating(8)
-        tags.setPlotOutline('Outline yo')
-        tags.setPlot('Plot yo')
-        tags.setTagLine('Tag yo')
-        tags.setDuration(110)
-        tags.setMpaa('T')
-        tags.setTrailer('/home/akva/fluffy/puppies.mkv')
-        tags.setGenres(['Action', 'Comedy'])
-        tags.setCountries(['Norway', 'Sweden', 'China'])
-        tags.setWriters(['None', 'Want', 'To Admit It'])
-        tags.setDirectors(['Director 1', 'Director 2'])
-        tags.setStudios(['Studio1', 'Studio2'])
-        tags.setDateAdded('2016-01-01')
-        tags.setPremiered('2015-01-01')
-        tags.setFirstAired('2007-01-01')
-        tags.setTagLine('Something / Else')
-        tags.setRatings({'imdb': (7, 25457), 'tvdb': (8.1, 5478)}, defaultrating='imdb')
-        tags.setUniqueIDs({'tvdb': '3894', 'imdb': 'tt384940'}, defaultuniqueid='tvdb')
-        tags.addSeason(1, 'Beautiful')
-        tags.addSeason(2, 'Sun')
-        tags.setCast([xbmc.Actor('spiff', 'himself', order=2, thumbnail='/home/akva/Pictures/fish.jpg'),
-                      xbmc.Actor('monkey', 'orange', order=1, thumbnail='/home/akva/Pictures/coffee.jpg')])
-        tags.addAvailableArtwork('DefaultBackFanart.png', 'banner')
-        tags.addAvailableArtwork('/home/akva/Pictures/hawaii-shirt.png', 'poster')
-        liz.setAvailableFanart([{'image': 'DefaultBackFanart.png', 'preview': 'DefaultBackFanart.png'},
-                                {'image': '/home/akva/Pictures/hawaii-shirt.png',
-                                 'preview': '/home/akva/Pictures/hawaii-shirt.png'}])
-        xbmcplugin.setResolvedUrl(handle=plugin_handle, succeeded=True, listitem=liz)
+    liz = xbmcgui.ListItem(f'Episode {episode}', offscreen=True)
+    tags = liz.getVideoInfoTag()
+    tags.setTitle(f'Episode {episode}')
+    tags.setSeason(1)
+    tags.setEpisode(int(episode))
+    tags.setDuration(anime['duration'])
+    tags.setGenres(anime['genres'])
+    tags.setStudios([studio['name'] for studio in anime['studios']['nodes']])
+    tags.addSeason(1)
+    xbmcplugin.setResolvedUrl(handle=plugin_handle, succeeded=True, listitem=liz)
 
-elif action == 'nfourl':
-    nfo = params['nfo']
-    xbmc.log('Find url from nfo file', xbmc.LOGDEBUG)
-    liz = xbmcgui.ListItem('Demo show 1', offscreen=True)
-    xbmcplugin.addDirectoryItem(handle=plugin_handle, url="/path/to/show", listitem=liz, isFolder=True)
+elif action == 'getartwork':
+    anilist_id = params['id']
+    log(f'Get artwork for anime with id {anilist_id}')
+    anime = main.fetch_anime_by_id(anilist_id)
+
+    liz = xbmcgui.ListItem(anime['title']['english'], anime['title']['romaji'], offscreen=True)
+    liz.addAvailableArtwork(anime['bannerImage'], 'banner')
+    liz.addAvailableArtwork(anime['coverImage']['extraLarge'], 'poster')
+    liz.setAvailableFanart([{'image': anime['bannerImage'], 'preview': anime['bannerImage']},
+                            {'image': anime['coverImage']['extraLarge'],
+                                'preview': anime['coverImage']['extraLarge']}])
+    xbmcplugin.setResolvedUrl(handle=plugin_handle, succeeded=True, listitem=liz)
+
+elif "nfo" in action.lower():
+    log("NFO not supported")
 
 elif action is not None:
     xbmc.log(f'Action "{action}" not implemented', xbmc.LOGDEBUG)
+    web_pdb.set_trace()
 
 xbmcplugin.endOfDirectory(plugin_handle)
