@@ -1,7 +1,7 @@
 # aniscraper
 ~~aniscraper is a Kodi scraper addon that plays nice with the season structure of anime, as well as anime movies.  
 Highly WIP.~~  
-⚠️ This project has been abandonen in favor of systems like Sonarr and thetvdb scraper plugin. ⚠️  
+⚠️ This project has been abandoned in favor of systems like Sonarr and thetvdb scraper plugin. ⚠️  
   
 # Credit
 This plugin is based on the following Kodi plugins:  
